@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-app-java
+  labels:
+    name: demo-app-java
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-app-java-sa
+  namespace: demo-app-java
+  labels:
+    app: demo-app-java
+  annotations:
+    azure.workload.identity/client-id: "${MANAGED_IDENTITY_CLIENT_ID}"
+---
+# ClusterRole for Identity Binding - allows using both managed identities
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: identity-binding-role
+rules:
+  - verbs: ["use-managed-identity"]
+    apiGroups: ["cid.wi.aks.azure.com"]
+    resources:
+      ["${MANAGED_IDENTITY_CLIENT_ID}"]
+---
+# ClusterRoleBinding to bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: identity-binding-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: identity-binding-role
+subjects:
+  - kind: ServiceAccount
+    name: demo-app-java-sa
+    namespace: demo-app-java
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-java
+  namespace: demo-app-java
+  labels:
+    app: demo-app-java
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app-java
+  template:
+    metadata:
+      labels:
+        app: demo-app-java
+        azure.workload.identity/use: "true"
+      annotations:
+        azure.workload.identity/use-identity-binding: "true"
+        azure.workload.identity/inject-proxy-sidecar: "true" # Enable migration sidecar
+        azure.workload.identity/proxy-sidecar-port: "8000" # Set sidecar port (default is 8000)
+    spec:
+      serviceAccountName: demo-app-java-sa
+      containers:
+        - name: demo-app-java
+          image: ${CONTAINER_REGISTRY}/demo-app-java:latest
+          imagePullPolicy: Always
+          env:
+            - name: AZURE_HTTP_LOG_DETAIL_LEVEL
+              value: BODY_AND_HEADERS
+            # https://github.com/AzureAD/microsoft-authentication-library-for-java/blob/c75065baa383043c71ed9d4fc79a94306ca67f29/msal4j-sdk/src/main/java/com/microsoft/aad/msal4j/Constants.java
+            # IMDS_ENDPOINT
+            # The problem is the SDK fixed the imds endpoint per env var
+            # https://github.com/AzureAD/microsoft-authentication-library-for-java/blob/c75065baa383043c71ed9d4fc79a94306ca67f29/msal4j-sdk/src/main/java/com/microsoft/aad/msal4j/ManagedIdentityClient.java#L11-L28
+            - name: MSI_ENDPOINT
+              value: http://localhost:8000
+            - name: KEYVAULT_URL
+              value: "${KEYVAULT_URL}"
+            - name: SECRET_NAME
+              value: "demo-secret"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
